@@ -35,22 +35,22 @@ def text_process(self, texts):
     return padded_tensor
 
 
-def get_word_id(word, word2id, id2word, max_vocab_size):
+def get_word_id(word, word2id, max_vocab_size):
     if word not in word2id:
         if len(word2id) >= max_vocab_size:
             return word2id["<UNK>"]
-        id2word.append(word)
         word2id[word] = len(word2id)
     return word2id[word]
 
 
-def words_to_ids(words, word2id):
+def words_to_ids(words, word2id, stop_tokens):
     ids = []
     for word in words:
-        try:
-            ids.append(word2id[word])
-        except KeyError:
-            ids.append(1)
+        if word.strip() not in stop_tokens:
+            try:
+                ids.append(word2id[word])
+            except KeyError:
+                ids.append(1)
     return ids
 
 
@@ -71,39 +71,17 @@ def to_pt(np_matrix, enable_cuda=False, type='long'):
             return torch.autograd.Variable(torch.from_numpy(np_matrix).type(torch.FloatTensor))
 
 
-def pad_sequences(sequences, maxlen=None, dtype='int32', value=0.):
-    '''
-    Partially borrowed from Keras
-    # Arguments
-        sequences: list of lists where each element is a sequence
-        maxlen: int, maximum length
-        dtype: type to cast the resulting sequence.
-        value: float, value to pad the sequences to the desired value.
-    # Returns
-        x: numpy array with dimensions (number_of_sequences, maxlen)
-    '''
-    lengths = [len(s) for s in sequences]
-    nb_samples = len(sequences)
-    if maxlen is None:
-        maxlen = np.max(lengths)
-    # take the sample shape from the first non empty sequence
-    # checking for consistency in the main loop below.
-    sample_shape = tuple()
-    for s in sequences:
-        if len(s) > 0:
-            sample_shape = np.asarray(s).shape[1:]
-            break
-    x = (np.ones((nb_samples, maxlen) + sample_shape) * value).astype(dtype)
-    for idx, s in enumerate(sequences):
-        if len(s) == 0:
-            continue  # empty list was found
-        # pre truncating
-        trunc = s[-maxlen:]
-        # check `trunc` has expected shape
-        trunc = np.asarray(trunc, dtype=dtype)
-        if trunc.shape[1:] != sample_shape:
-            raise ValueError('Shape of sample %s of sequence at position %s is different from expected shape %s' %
-                             (trunc.shape[1:], idx, sample_shape))
-        # post padding
-        x[idx, :len(trunc)] = trunc
-    return x
+def pad_sequences(sequences, word2id, device, max_command_len=None, max_count_commands=None, dtype='int32', value=0.):
+
+    if max_count_commands:
+        padded = np.ones((max_count_commands, max_command_len)) * word2id["<PAD>"]
+    else:
+        padded = np.ones((len(sequences), max_command_len)) * word2id["<PAD>"]
+
+    for i, text in enumerate(sequences):
+        padded[i, :len(text)] = text
+
+    padded_tensor = torch.from_numpy(padded).type(torch.long).to(device)
+    padded_tensor = padded_tensor.permute(1, 0)     # Batch x Seq => Seq x Batch
+    return padded_tensor
+

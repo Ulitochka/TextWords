@@ -53,7 +53,7 @@ class CustomAgent:
                 torch.backends.cudnn.deterministic = True
                 torch.cuda.manual_seed(self.config['general']['random_seed'])
                 self.use_cuda = True
-                device = 'cuda:0'
+                self.device = 'cuda:0'
         else:
             self.use_cuda = False
 
@@ -68,8 +68,6 @@ class CustomAgent:
 
         self._initialized = False
         self._epsiode_has_started = False
-        self.id2word = ["<PAD>", "<UNK>"]
-        self.word2id = {w: i for i, w in enumerate(self.id2word)}
         self.current_episode = 0
         self.best_avg_score_so_far = 0.0
 
@@ -77,6 +75,7 @@ class CustomAgent:
         self.model = CommandScorerModel(input_size=self.max_vocab_size, hidden_size=128, device=self.device)
         parameters = filter(lambda p: p.requires_grad, self.model.parameters())
         self.optimizer = torch.optim.Adam(parameters, lr=self.config['training']['optimizer']['learning_rate'])
+        self.model.to(self.device)
 
         # using checkpoint
         if self.config['checkpoint']['load_pretrained']:
@@ -101,7 +100,7 @@ class CustomAgent:
         # TODO
         self.rng = RandomState()
         self.text_processor = TextPreprocessor(self.nlp,
-                                               self.use_cuda,
+                                               self.device,
                                                self.word_vocab,
                                                self.single_word_verbs,
                                                self.EOS_id,
@@ -111,7 +110,7 @@ class CustomAgent:
     def train(self) -> None:
         """ Tell the agent it is in training mode. """
         self.mode = "train"
-        self.model.reset_hidden(1)
+        self.model.reset_hidden(self.batch_size)
 
     def eval(self) -> None:
         """ Tell the agent it is in evaluation mode. """
@@ -129,7 +128,7 @@ class CustomAgent:
 
     def tokenize(self, text):
         text = preprocessing(text, tokenizer=self.nlp)
-        word_ids = [get_word_id(t, self.word2id, self.id2word, self.max_vocab_size) for t in text]
+        word_ids = [get_word_id(t, self.word2id, self.max_vocab_size) for t in text]
         return word_ids
 
     def discount_rewards(self, last_values):
@@ -242,7 +241,6 @@ class CustomAgent:
 
         self.scores = []
         self.dones = []
-        self.prev_actions = ["" for _ in range(len(obs))]
 
         self.cache_description_id_list = None
         self.cache_chosen_indices = None
@@ -282,38 +280,21 @@ class CustomAgent:
 
     def act(self, obs: List[str], scores: List[int], dones: List[bool], infos: Dict[str, List[Any]]) -> Optional[
         List[str]]:
-        """
-        Acts upon the current list of observations.
 
-        One text command must be returned for each observation.
+        input_tensor, _, commands_tensor = self.text_processor.get_game_step_info(obs, infos)
 
-        Arguments:
-            obs: Previous command's feedback for each game.
-            scores: The score obtained so far for each game.
-            dones: Whether a game is finished.
-            infos: Additional information for each game.
+        print(input_tensor.size())
+        print(commands_tensor.size())
+        print('*' * 100)
 
-        Returns:
-            If episode had ended (e.g. `all(dones)`), the returned
-            value is ignored.ed, e.g. `all(dones)`.
+        outputs, indexes, values = self.model(input_tensor, commands_tensor)
+        # actions = [infos["admissible_commands"][indexes[0]]]
 
-        Notes:
-            Commands returned for games marked as `done` have no effect.
-            The states for finished games are simply copy over until all
-            games are done.
-        """
-
-        # for i in range(len(dones)):
-        #     print('obs:', obs[i])
-        #     print('scores:', scores[i])
-        #     print('dones:', dones[i])
-        #     print('infos/has_won:', infos['has_won'][i])
-        #     print('infos/description:', infos['description'][i].replace('\n', ''))
-        #     print('infos/inventory:', infos['inventory'][i].replace('\n', ''))
-        #     print('infos/has_lost:', infos['has_lost'][i])
-        #     print('infos/admissible_commands:', infos['admissible_commands'][i])
-        #     print('#' * 100)
-        # print('@' * 200)
+        # print('outputs:', outputs)
+        # print('indexes:', indexes)
+        # print('values:', values)
+        # print(infos["admissible_commands"][0])
+        # print('*' * 100)
 
         if not self._epsiode_has_started:
             self.start_episode(obs, infos)
@@ -326,18 +307,6 @@ class CustomAgent:
             # append scores / dones from previous step into memory
             self.scores.append(scores)
             self.dones.append(dones)
-
-        input_description, _ = self.text_processor.get_game_step_info(obs, infos, self.prev_actions)
-
-        # print(input_description.shape)
-
-        commands_tensor = self._process(infos["admissible_commands"])
-
-
-
-
-
-
 
         self.current_step += 1
 
