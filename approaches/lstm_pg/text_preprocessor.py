@@ -61,7 +61,6 @@ class TextPreprocessor:
                                           max_command_len=max_len(description_id_list))
 
         # command preprocessing
-
         admissible_commands_token_list = [[preprocessing(c, tokenizer=self.tokenizer) for c in c_list]
                                           for c_list in infos["admissible_commands"]]
         admissible_commands_id_list = [[words_to_ids(c, self.word2id, self.stop_tokens) for c in c_list]

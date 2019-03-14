@@ -28,24 +28,24 @@ class CommandScorerModel(nn.Module):
 
         embedded = self.embedding(obs)
         encoder_output, encoder_hidden = self.encoder_gru(embedded)
-
         state_output, state_hidden = self.state_gru(encoder_hidden, self.state_hidden)
         self.state_hidden = state_hidden
         value = self.critic(state_output)
 
         # Attention network over the commands.
-        cmds_embedding = self.embedding.forward(commands)
+        cmds_embedding = self.embedding.forward(commands)   # cmds_embedding torch.Size([3, 6, 17, 128])
         print('cmds_embedding', cmds_embedding.size())
-        _, cmds_encoding_last_states = self.cmd_encoder_gru.forward(cmds_embedding)  # 1 x cmds x hidden
+
+        # Diff command for every batch element: cmds_encoding_last_states torch.Size([1, 3, 17, 128])
+        _cmds_encoding_last_states = torch.stack([self.cmd_encoder_gru.forward(el)[-1] for el in cmds_embedding], 1)
+        print('_cmds_encoding_last_states', _cmds_encoding_last_states.size())
 
         # Same observed state for all commands.
         cmd_selector_input = torch.stack([state_hidden] * nb_cmds, 2)  # 1 x batch x cmds x hidden
-
-        # Same command choices for the whole batch.
-        cmds_encoding_last_states = torch.stack([cmds_encoding_last_states] * batch_size, 1)  # 1 x batch x cmds x hidden
+        print('cmd_selector_input', cmd_selector_input.size())
 
         # Concatenate the observed state and command encodings.
-        cmd_selector_input = torch.cat([cmd_selector_input, cmds_encoding_last_states], dim=-1)
+        cmd_selector_input = torch.cat([cmd_selector_input, _cmds_encoding_last_states], dim=-1)
 
         # Compute one score per command.
         scores = F.relu(self.att_cmd(cmd_selector_input)).squeeze(-1)  # 1 x Batch x cmds
