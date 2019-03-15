@@ -3,6 +3,7 @@ import yaml
 import time
 import uuid
 import copy
+import warnings
 from collections import defaultdict
 from typing import List, Dict, Any, Optional
 
@@ -72,7 +73,10 @@ class CustomAgent:
         self.best_avg_score_so_far = 0.0
 
         # model_init
-        self.model = CommandScorerModel(input_size=self.max_vocab_size, hidden_size=128, device=self.device)
+        self.model = CommandScorerModel(input_size=self.max_vocab_size,
+                                        hidden_size=128,
+                                        device=self.device,
+                                        verbose=False)
         parameters = filter(lambda p: p.requires_grad, self.model.parameters())
         self.optimizer = torch.optim.Adam(parameters, lr=self.config['training']['optimizer']['learning_rate'])
         self.model.to(self.device)
@@ -107,16 +111,6 @@ class CustomAgent:
                                                self.preposition_map,
                                                self.word2id)
 
-    def train(self) -> None:
-        """ Tell the agent it is in training mode. """
-        self.mode = "train"
-        self.model.reset_hidden(self.batch_size)
-
-    def eval(self) -> None:
-        """ Tell the agent it is in evaluation mode. """
-        self.mode = "test"
-        self.model.finish()
-
     def infos_to_request(self) -> EnvInfos:
         request_infos = EnvInfos()
         request_infos.description = True
@@ -144,60 +138,6 @@ class CustomAgent:
         return returns[::-1], advantages[::-1]
 
     def select_additional_infos(self) -> EnvInfos:
-        """
-        Returns what additional information should be made available at each game step.
-
-        Requested information will be included within the `infos` dictionary
-        passed to `CustomAgent.act()`. To request specific information, create a
-        :py:class:`textworld.EnvInfos <textworld.envs.wrappers.filter.EnvInfos>`
-        and set the appropriate attributes to `True`. The possible choices are:
-
-        * `description`: text description of the current room, i.e. output of the `look` command;
-        * `inventory`: text listing of the player's inventory, i.e. output of the `inventory` command;
-        * `max_score`: maximum reachable score of the game;
-        * `objective`: objective of the game described in text;
-        * `entities`: names of all entities in the game;
-        * `verbs`: verbs understood by the the game;
-        * `command_templates`: templates for commands understood by the the game;
-        * `admissible_commands`: all commands relevant to the current state;
-
-        In addition to the standard information, game specific information
-        can be requested by appending corresponding strings to the `extras`
-        attribute. For this competition, the possible extras are:
-
-        * `'recipe'`: description of the cookbook;
-        * `'walkthrough'`: one possible solution to the game (not guaranteed to be optimal);
-
-        Example:
-            Here is an example of how to request information and retrieve it.
-
-            from textworld import EnvInfos
-            request_infos = EnvInfos(description=True, inventory=True, extras=["recipe"])
-            ...
-            env = gym.make(env_id)
-            ob, infos = env.reset()
-            print(infos["description"])
-            print(infos["inventory"])
-            print(infos["extra.recipe"])
-
-        Notes:
-            The following information *won't* be available at test time:
-
-            * 'walkthrough'
-
-            Requesting additional infos comes with some penalty (called handicap).
-            The exact penalty values will be defined in function of the average
-            scores achieved by agents using the same handicap.
-
-            Handicap is defined as follows
-                max_score, has_won, has_lost,               # Handicap 0
-                description, inventory, verbs, objective,   # Handicap 1
-                command_templates,                          # Handicap 2
-                entities,                                   # Handicap 3
-                extras=["recipe"],                          # Handicap 4
-                admissible_commands,                        # Handicap 5
-        """
-
         return EnvInfos(description=True,
                         inventory=True,
                         admissible_commands=True,
@@ -215,36 +155,6 @@ class CustomAgent:
             self.model.load_state_dict(state_dict)
         except:
             print("Failed to load checkpoint...")
-
-    def start_episode(self, obs: List[str], infos: Dict[str, List[Any]]) -> None:
-        self.prepare_agent(obs, infos)
-        self._epsiode_has_started = True
-
-    def end_episode(self, obs: List[str], scores: List[int], infos: Dict[str, List[Any]]) -> None:
-        """
-        Tell the agent the episode has terminated.
-
-        Arguments:
-            obs: Previous command's feedback for each game.
-            score: The score obtained so far for each game.
-            infos: Additional information for each game.
-        """
-        self.finish()
-        self._epsiode_has_started = False
-
-    def prepare_agent(self, obs: List[str], infos: Dict[str, List[Any]]):
-        # TODO !?
-        self.stats = {"max": defaultdict(list), "mean": defaultdict(list)}
-        self.transitions = []
-        self.last_score = 0
-        self.no_train_step = 0
-
-        self.scores = []
-        self.dones = []
-
-        self.cache_description_id_list = None
-        self.cache_chosen_indices = None
-        self.current_step = 0
 
     def finish(self) -> None:
         """
@@ -278,23 +188,69 @@ class CustomAgent:
 
         self.current_episode += 1
 
+    def train(self):
+        self.mode = "train"
+        self.stats = {"max": defaultdict(list), "mean": defaultdict(list)}
+        self.transitions = []
+        self.model.reset_hidden(1)
+        self.last_score = 0
+        self.no_train_step = 0
+
+        self.dones = []
+        self.scores = []
+
+    def eval(self):
+        self.mode = "test"
+        self.model.reset_hidden(1)
+
     def act(self, obs: List[str], scores: List[int], dones: List[bool], infos: Dict[str, List[Any]]) -> Optional[
         List[str]]:
 
         input_tensor, _, commands_tensor = self.text_processor.get_game_step_info(obs, infos)
+        outputs, indexes, values = self.model(input_tensor, commands_tensor)
 
-        print(input_tensor.size())
-        print(commands_tensor.size())
+        print('outputs:', outputs)
+        print('indexes:', indexes[0])
+        print('values:', values)
+
+        actions_per_batch = []
+        for cmds_i in range(self.batch_size):
+            action = None
+            try:
+                action = infos["admissible_commands"][cmds_i][indexes[0][cmds_i]]
+            except IndexError:
+                # TODO torch.Size([3, max_seq_len, max_commands_number])
+                action = self.rng.choice(infos["admissible_commands"][cmds_i])
+                warnings.warn("Warning model choice padded array: %s" % (
+                        str(infos["admissible_commands"][cmds_i]) + ' ' +
+                        str(len(infos["admissible_commands"][cmds_i])) + ' '+ str(indexes[0][cmds_i]),))
+            actions_per_batch.append(action)
         print('*' * 100)
 
-        outputs, indexes, values = self.model(input_tensor, commands_tensor)
-        # actions = [infos["admissible_commands"][indexes[0]]]
+        if self.mode == "eval":
+            if all(dones):
+                self.model.reset_hidden(1)
+            return actions_per_batch
 
-        # print('outputs:', outputs)
-        # print('indexes:', indexes)
-        # print('values:', values)
-        # print(infos["admissible_commands"][0])
-        # print('*' * 100)
+        self.no_train_step += 1
+
+        if self.transitions:
+            reward = score - self.last_score  # Reward is the gain/loss in score.
+            self.last_score = score
+            if infos["has_won"]:
+                reward += 100
+            if infos["has_lost"]:
+                reward -= 100
+
+            self.transitions[-1][0] = reward  # Update reward information.
+
+
+
+
+        if self.mode == "eval":
+            if done:
+                self.model.reset_hidden(1)
+            return action
 
         if not self._epsiode_has_started:
             self.start_episode(obs, infos)
@@ -308,7 +264,7 @@ class CustomAgent:
             self.scores.append(scores)
             self.dones.append(dones)
 
-        self.current_step += 1
+
 
         if all(dones):
             self.end_episode(obs, scores, infos)
